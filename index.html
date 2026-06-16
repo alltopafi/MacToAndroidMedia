@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>macOS Media Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #38bdf8;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
+                radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%), 
+                radial-gradient(at 100% 0%, hsla(339,49%,30%,1) 0, transparent 50%);
+            background-size: cover;
+            background-position: center;
+            font-family: 'Inter', sans-serif;
+            color: var(--text-primary);
+            overflow: hidden;
+            transition: background-image 0.5s ease;
+        }
+
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 40px;
+            width: 400px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .artwork {
+            width: 250px;
+            height: 250px;
+            border-radius: 16px;
+            object-fit: cover;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            margin-bottom: 30px;
+            background: #1e293b;
+            transition: transform 0.3s ease;
+        }
+
+        .artwork:hover {
+            transform: scale(1.05);
+        }
+
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        h2 {
+            margin: 0 0 4px 0;
+            font-size: 16px;
+            font-weight: 400;
+            color: var(--text-secondary);
+        }
+
+        h3 {
+            margin: 0 0 20px 0;
+            font-size: 14px;
+            font-weight: 300;
+            color: var(--text-secondary);
+        }
+
+        .progress-container {
+            width: 100%;
+            margin-bottom: 30px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+
+        .time-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+        }
+
+        .btn {
+            background: none;
+            border: none;
+            color: var(--text-primary);
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.2s;
+            opacity: 0.8;
+        }
+
+        .btn:hover {
+            opacity: 1;
+            transform: scale(1.1);
+            color: var(--accent);
+        }
+
+        .btn-play {
+            font-size: 40px;
+        }
+        
+        #status {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 12px;
+            padding: 6px 12px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.3);
+        }
+        .connected { color: #4ade80; }
+        .disconnected { color: #f87171; }
+    </style>
+</head>
+<body>
+    <div id="status" class="disconnected">Connecting...</div>
+    <div class="glass-card">
+        <img id="artwork" class="artwork" src="" alt="Album Art" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbGw9IiMxZTI5M2IiLz48L3N2Zz4='">
+        <h1 id="title">Nothing Playing</h1>
+        <h2 id="artist">Unknown Artist</h2>
+        <h3 id="album">Unknown Album</h3>
+
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <div class="time-labels">
+                <span id="time-elapsed">0:00</span>
+                <span id="time-total">0:00</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn" onclick="control('previous')"><i class="fas fa-backward-step"></i></button>
+            <button class="btn btn-play" onclick="control('togglePlayPause')"><i id="play-icon" class="fas fa-play"></i></button>
+            <button class="btn" onclick="control('next')"><i class="fas fa-forward-step"></i></button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://127.0.0.1:8000';
+        const WS_URL = 'ws://127.0.0.1:8000/api/ws';
+        
+        let ws;
+        let lastArtworkTitle = null;
+
+        function formatTime(seconds) {
+            if (!seconds) return "0:00";
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket(WS_URL);
+            const statusEl = document.getElementById('status');
+
+            ws.onopen = () => {
+                statusEl.textContent = 'Live';
+                statusEl.className = 'connected';
+            };
+
+            ws.onclose = () => {
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'disconnected';
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onmessage = (event) => {
+                const state = JSON.parse(event.data);
+                
+                document.getElementById('title').textContent = state.title || 'Nothing Playing';
+                document.getElementById('artist').textContent = state.artist || 'Unknown Artist';
+                document.getElementById('album').textContent = state.album || 'Unknown Album';
+                
+                document.getElementById('time-elapsed').textContent = formatTime(state.elapsed_time);
+                document.getElementById('time-total').textContent = formatTime(state.duration);
+                
+                const percent = state.duration ? (state.elapsed_time / state.duration) * 100 : 0;
+                document.getElementById('progress-fill').style.width = `${percent}%`;
+
+                const playIcon = document.getElementById('play-icon');
+                if (state.is_playing) {
+                    playIcon.className = 'fas fa-pause';
+                } else {
+                    playIcon.className = 'fas fa-play';
+                }
+
+                // Update artwork if title changed
+                if (state.title !== lastArtworkTitle) {
+                    lastArtworkTitle = state.title;
+                    const timestamp = new Date().getTime();
+                    document.getElementById('artwork').src = `${API_BASE}/api/artwork?t=${timestamp}`;
+                }
+            };
+        }
+
+        async function control(action) {
+            try {
+                await fetch(`${API_BASE}/api/control/${action}`, { method: 'POST' });
+            } catch (e) {
+                console.error("Control failed:", e);
+            }
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>

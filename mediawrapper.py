@@ -1,10 +1,11 @@
 import asyncio
 from typing import Optional
-from fastapi import FastAPI, Response, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import base64
-import uvicorn
 
 class MediaState(BaseModel):
     title: Optional[str] = None
@@ -86,8 +87,60 @@ class MediaTracker:
             duration=safe_float(duration)
         )
 
-app = FastAPI(title="macOS Media Tracker API")
 tracker = MediaTracker()
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+current_state_cache = None
+
+async def state_broadcaster():
+    global current_state_cache
+    while True:
+        try:
+            new_state = await tracker.get_current_state()
+            # Broadcast on any change (including elapsedTime updates every second)
+            if new_state != current_state_cache:
+                current_state_cache = new_state
+                await manager.broadcast(new_state.model_dump())
+        except Exception as e:
+            print(f"Error in broadcaster: {e}")
+        await asyncio.sleep(1)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the background task
+    task = asyncio.create_task(state_broadcaster())
+    yield
+    # Clean up the background task on shutdown
+    task.cancel()
+
+app = FastAPI(title="macOS Media Tracker API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/api/state", response_model=MediaState)
 async def get_state():
@@ -114,6 +167,22 @@ async def control_media(action: str):
     
     await tracker.execute_command(action)
     return {"status": "success", "action": action}
+
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Real-time stream of the macOS media state."""
+    await manager.connect(websocket)
+    try:
+        # Push the latest state immediately upon connection
+        if current_state_cache:
+            await websocket.send_json(current_state_cache.model_dump())
+            
+        while True:
+            # We must await receive to keep the connection alive
+            # You could easily expand this to accept {"action": "play"} commands over WS!
+            _ = await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 if __name__ == "__main__":
     print("Starting FastAPI server on http://127.0.0.1:8000")
