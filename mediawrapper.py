@@ -32,6 +32,18 @@ class MediaTracker:
         except FileNotFoundError:
             raise RuntimeError("Error: 'nowplaying-cli' not found. Install via Homebrew: brew install nowplaying-cli")
 
+    async def execute_command(self, command: str):
+        """Executes a playback control command."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'nowplaying-cli', command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+        except FileNotFoundError:
+            raise RuntimeError("Error: 'nowplaying-cli' not found. Install via Homebrew: brew install nowplaying-cli")
+
     async def get_artwork(self) -> Optional[bytes]:
         """Fetches and decodes the current album artwork."""
         b64_data = await self._fetch_field('artworkData')
@@ -92,6 +104,16 @@ async def get_artwork():
     
     # Return directly as an image so it renders natively in the browser
     return Response(content=img_bytes, media_type="image/jpeg")
+
+@app.post("/api/control/{action}")
+async def control_media(action: str):
+    """Controls media playback. Valid actions: play, pause, togglePlayPause, next, previous"""
+    valid_actions = ["play", "pause", "togglePlayPause", "next", "previous"]
+    if action not in valid_actions:
+        raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {', '.join(valid_actions)}")
+    
+    await tracker.execute_command(action)
+    return {"status": "success", "action": action}
 
 if __name__ == "__main__":
     print("Starting FastAPI server on http://127.0.0.1:8000")
