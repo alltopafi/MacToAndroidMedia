@@ -2,4 +2,6 @@
 <resources>
     <string name="empty_tag"></string>
     <string name="attribution_description">Media Controller Operations</string>
+    <string name="notification_connected_title">Mac Connected</string>
+    <string name="notification_connected_content">Successfully connected to %s</string>
 </resources>

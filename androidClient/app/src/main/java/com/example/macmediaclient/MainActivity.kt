@@ -18,6 +18,7 @@ import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.content.pm.PackageManager
 import androidx.appcompat.app.AppCompatActivity
 import coil.load
 import java.util.Locale
@@ -245,6 +246,9 @@ class MainActivity : AppCompatActivity() {
         setupListeners()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
             registerReceiver(
                 stateReceiver,
                 IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE),
@@ -313,10 +317,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (isActive) {
-            if (title != lastState.title) titleText.text = title ?: "No Title"
-            if (artist != lastState.artist) artistText.text = artist ?: "Unknown Artist"
-            if (album != lastState.album) albumText.text = album ?: "Unknown Album"
-            if (isPlaying != lastState.isPlaying) playPauseBtn.text = if (isPlaying) "Pause" else "Play"
+            titleText.text = title ?: "No Title"
+            artistText.text = artist ?: "Unknown Artist"
+            albumText.text = album ?: "Unknown Album"
+            playPauseBtn.text = if (isPlaying) "Pause" else "Play"
             
             // Progress Bar and Timers
             if (durMs > 0) {

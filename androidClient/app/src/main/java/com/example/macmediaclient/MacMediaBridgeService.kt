@@ -17,12 +17,18 @@ import androidx.annotation.OptIn
 import android.os.Handler
 import android.os.Bundle
 import android.os.Looper
+import android.os.Build
+import android.content.Context
 import android.util.Log
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.Futures
 import androidx.media3.common.ForwardingPlayer
+import android.app.PendingIntent
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import androidx.core.app.NotificationCompat
 
 class MacMediaBridgeService : MediaSessionService() {
     companion object {
@@ -37,14 +43,17 @@ class MacMediaBridgeService : MediaSessionService() {
         const val EXTRA_DURATION = "duration"
         const val EXTRA_IS_PLAYING = "is_playing"
         const val EXTRA_IS_ACTIVE = "is_active"
+        private const val CHANNEL_ID = "mac_connection_channel"
+        private const val NOTIFICATION_ID = 1001
     }
     private var mediaSession: MediaSession? = null
     private lateinit var dummyPlayer: ExoPlayer
     private var macClient: MacMediaClient? = null
     private var currentIp: String = "192.168.1.12"
     private var lastIsPlaying: Boolean = false
-    // Valid silent WAV
-    private val SILENT_URI = Uri.parse("data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    private var wasConnected: Boolean = false
+    // Valid silent WAV data URI to avoid resource corruption issues
+    private val SILENT_URI = Uri.parse("data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEARKwAAESsAAABAAgAZGF0YQgAAACAgICAgICAgA==")
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -84,16 +93,26 @@ class MacMediaBridgeService : MediaSessionService() {
             override fun pause() {
                 macClient?.postCommand("pause")
             }
+            override fun stop() {
+                macClient?.disconnect()
+                stopSelf()
+            }
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands().buildUpon()
                     .add(COMMAND_PLAY_PAUSE)
                     .add(COMMAND_SEEK_TO_NEXT)
                     .add(COMMAND_SEEK_TO_PREVIOUS)
+                    .add(COMMAND_STOP)
                     .build()
             }
         }
         
-        mediaSession = MediaSession.Builder(this, forwardingPlayer).build()
+        val sessionActivityIntent = Intent(this, MainActivity::class.java)
+        val sessionActivityPendingIntent = PendingIntent.getActivity(this, 0, sessionActivityIntent, PendingIntent.FLAG_IMMUTABLE)
+        
+        mediaSession = MediaSession.Builder(this, forwardingPlayer)
+            .setSessionActivity(sessionActivityPendingIntent)
+            .build()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -114,8 +133,14 @@ class MacMediaBridgeService : MediaSessionService() {
                     macClient?.postCommand("play")
                 }
             }
-            "PLAY" -> macClient?.postCommand("play")
-            "PAUSE" -> macClient?.postCommand("pause")
+            "PLAY" -> {
+                Log.d("MacMediaBridgeService", "Handling PLAY command")
+                macClient?.postCommand("play")
+            }
+            "PAUSE" -> {
+                Log.d("MacMediaBridgeService", "Handling PAUSE command")
+                macClient?.postCommand("pause")
+            }
             "NEXT" -> macClient?.postCommand("next")
             "PREVIOUS" -> macClient?.postCommand("previous")
             else -> {
@@ -133,9 +158,15 @@ class MacMediaBridgeService : MediaSessionService() {
     private fun startClient() {
         Log.d("MacMediaBridgeService", "Starting client for IP: $currentIp")
         macClient?.disconnect()
+        wasConnected = false
         macClient = MacMediaClient(currentIp) { state ->
             Log.d("MacMediaBridgeService", "State changed: isConnected=${state.isConnected}, title=${state.title}")
             
+            if (state.isConnected && !wasConnected) {
+                showConnectionNotification()
+            }
+            wasConnected = state.isConnected
+
             sendStateUpdate(state)
 
             runOnUiThread {
@@ -144,19 +175,12 @@ class MacMediaBridgeService : MediaSessionService() {
                     return@runOnUiThread
                 }
 
-                val cleanIp = currentIp.trim()
-                    .removePrefix("http://")
-                    .removePrefix("https://")
-                    .removePrefix("ws://")
-                    .removePrefix("wss://")
-                    .removeSuffix("/")
-                
-                val hostWithPort = if (cleanIp.contains(":")) cleanIp else "$cleanIp:8000"
-                
                 val metadata = MediaMetadata.Builder()
                     .setTitle(state.title ?: "Unknown Title")
                     .setArtist(state.artist ?: "Unknown Artist")
                     .setAlbumTitle(state.album ?: "Unknown Album")
+                    .setIsPlayable(true)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
                 
                 state.artworkBase64?.let { base64 ->
                     try {
@@ -173,23 +197,27 @@ class MacMediaBridgeService : MediaSessionService() {
                     .setMediaId("mac_media")
                     .setMediaMetadata(builtMetadata)
                     .setUri(SILENT_URI)
+                    .setMimeType(MimeTypes.AUDIO_WAV)
                     .build()
 
+                Log.d("MacMediaBridgeService", "Updating player metadata: ${builtMetadata.title}")
                 val currentItem = dummyPlayer.currentMediaItem
                 if (currentItem?.mediaId != "mac_media") {
                     dummyPlayer.setMediaItem(mediaItem)
                     dummyPlayer.prepare()
-                } else if (currentItem.mediaMetadata.title != builtMetadata.title) {
-                    // Only replace if metadata changed significantly
+                } else if (currentItem.mediaMetadata.title != builtMetadata.title || 
+                    currentItem.mediaMetadata.artworkData?.size != builtMetadata.artworkData?.size) {
+                    // Replace item to refresh metadata in system UI
                     dummyPlayer.replaceMediaItem(0, mediaItem)
                 }
 
                 lastIsPlaying = state.isPlaying
                 if (state.isPlaying) {
-                    dummyPlayer.playWhenReady = true
+                    if (dummyPlayer.playbackState == Player.STATE_IDLE) {
+                        dummyPlayer.prepare()
+                    }
                     dummyPlayer.play()
                 } else {
-                    dummyPlayer.playWhenReady = false
                     dummyPlayer.pause()
                 }
             }
@@ -200,9 +228,14 @@ class MacMediaBridgeService : MediaSessionService() {
             .setMediaId("mac_media_init")
             .setUri(SILENT_URI)
             .setMimeType(MimeTypes.AUDIO_WAV)
+            .setMediaMetadata(MediaMetadata.Builder()
+                .setTitle("Connecting to Mac...")
+                .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                .build())
             .build()
         dummyPlayer.setMediaItem(mediaItem)
         dummyPlayer.prepare()
+        dummyPlayer.playWhenReady = true // Start immediately to trigger foreground
 
         macClient?.connect()
         // Send initial state update to ensure UI knows we're starting to connect
@@ -225,11 +258,41 @@ class MacMediaBridgeService : MediaSessionService() {
         sendBroadcast(intent)
     }
 
+    private fun showConnectionNotification() {
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Mac Connection Status",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        notificationManager.createNotificationChannel(channel)
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth) // Using a generic system icon
+            .setContentTitle(getString(R.string.notification_connected_title))
+            .setContentText(getString(R.string.notification_connected_content, currentIp))
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID, notification)
+    }
+
     private fun runOnUiThread(action: () -> Unit) {
         Handler(Looper.getMainLooper()).post(action)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        Log.d("MacMediaBridgeService", "onGetSession called for ${controllerInfo.packageName}")
+        return mediaSession
+    }
 
     override fun onDestroy() {
         macClient?.disconnect()

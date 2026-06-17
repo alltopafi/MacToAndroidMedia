@@ -74,8 +74,8 @@ class MacMediaClient(private val ipAddress: String, private val onStateChanged: 
                         artworkBase64 = json.optString("artwork").takeIf { it != "null" && it.isNotEmpty() },
                         position = json.optLong("elapsed_time", json.optLong("position", json.optLong("elapsed", 0))),
                         duration = json.optLong("duration", 0),
-                        isPlaying = json.optBoolean("is_playing", false),
-                        isActive = json.optBoolean("is_active", false),
+                        isPlaying = json.optBoolean("is_playing", json.optBoolean("playing", false)),
+                        isActive = json.optBoolean("is_active", json.optBoolean("active", false)),
                         isConnected = true
                     )
                     onStateChanged(lastState)
