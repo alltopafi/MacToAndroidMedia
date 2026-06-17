@@ -15,6 +15,8 @@ class MediaState(BaseModel):
     is_active: bool = False
     elapsed_time: Optional[float] = None
     duration: Optional[float] = None
+    duration_formatted: Optional[str] = None
+    elapsed_formatted: Optional[str] = None
 
 class MediaTracker:
     """Asynchronous tracker for macOS media state via nowplaying-cli."""
@@ -76,6 +78,18 @@ class MediaTracker:
                 return float(val) if val else None
             except ValueError:
                 return None
+
+        def format_time(seconds: Optional[float]) -> Optional[str]:
+            if seconds is None:
+                return None
+            s = int(seconds)
+            h = s // 3600
+            m = (s % 3600) // 60
+            sec = s % 60
+            return f"{h:02d}:{m:02d}:{sec:02d}"
+
+        elapsed_val = safe_float(elapsed)
+        duration_val = safe_float(duration)
         
         return MediaState(
             title=title,
@@ -83,8 +97,10 @@ class MediaTracker:
             album=album,
             is_playing=is_playing,
             is_active=is_active,
-            elapsed_time=safe_float(elapsed),
-            duration=safe_float(duration)
+            elapsed_time=elapsed_val,
+            duration=duration_val,
+            elapsed_formatted=format_time(elapsed_val),
+            duration_formatted=format_time(duration_val)
         )
 
 tracker = MediaTracker()

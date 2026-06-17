@@ -213,8 +213,8 @@
                 document.getElementById('artist').textContent = state.artist || 'Unknown Artist';
                 document.getElementById('album').textContent = state.album || 'Unknown Album';
                 
-                document.getElementById('time-elapsed').textContent = formatTime(state.elapsed_time);
-                document.getElementById('time-total').textContent = formatTime(state.duration);
+                document.getElementById('time-elapsed').textContent = state.elapsed_formatted || "00:00:00";
+                document.getElementById('time-total').textContent = state.duration_formatted || "00:00:00";
                 
                 const percent = state.duration ? (state.elapsed_time / state.duration) * 100 : 0;
                 document.getElementById('progress-fill').style.width = `${percent}%`;
