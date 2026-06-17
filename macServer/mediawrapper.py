@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response, HTTPException, WebSocket, WebSocketDisconnect
@@ -13,6 +14,7 @@ class MediaState(BaseModel):
     album: Optional[str] = None
     is_playing: bool = False
     is_active: bool = False
+    playback_rate: float = 0.0
     elapsed_time: Optional[float] = None
     duration: Optional[float] = None
     duration_formatted: Optional[str] = None
@@ -21,20 +23,6 @@ class MediaState(BaseModel):
 class MediaTracker:
     """Asynchronous tracker for macOS media state via nowplaying-cli."""
     
-    async def _fetch_field(self, field: str) -> Optional[str]:
-        """Runs nowplaying-cli asynchronously and gracefully handles missing data."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                'nowplaying-cli', 'get', field,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            stdout, _ = await proc.communicate()
-            val = stdout.decode().strip()
-            return None if val == "null" or not val else val
-        except FileNotFoundError:
-            raise RuntimeError("Error: 'nowplaying-cli' not found. Install via Homebrew: brew install nowplaying-cli")
-
     async def execute_command(self, command: str):
         """Executes a playback control command."""
         try:
@@ -45,63 +33,92 @@ class MediaTracker:
             )
             await proc.wait()
         except FileNotFoundError:
-            raise RuntimeError("Error: 'nowplaying-cli' not found. Install via Homebrew: brew install nowplaying-cli")
+            raise RuntimeError("Error: 'nowplaying-cli' not found.")
 
     async def get_artwork(self) -> Optional[bytes]:
         """Fetches and decodes the current album artwork."""
-        b64_data = await self._fetch_field('artworkData')
-        if not b64_data or b64_data == "null":
-            return None
         try:
+            proc = await asyncio.create_subprocess_exec(
+                'nowplaying-cli', 'get-raw',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await proc.communicate()
+            val = stdout.decode().strip()
+            if not val or val == "null":
+                return None
+                
+            import json
+            data = json.loads(val)
+            b64_data = data.get('kMRMediaRemoteNowPlayingInfoArtworkData')
+            
+            if not b64_data or b64_data == "null":
+                return None
             return base64.b64decode(b64_data)
         except Exception:
             return None
 
     async def get_current_state(self) -> MediaState:
-        """Concurrently fetches all required metadata."""
-        # Run subprocesses concurrently to minimize blocking time
-        results = await asyncio.gather(
-            self._fetch_field('title'),
-            self._fetch_field('artist'),
-            self._fetch_field('album'),
-            self._fetch_field('playbackRate'),
-            self._fetch_field('elapsedTime'),
-            self._fetch_field('duration')
-        )
-        
-        title, artist, album, playback_rate, elapsed, duration = results
-        is_playing = playback_rate == "1"
-        is_active = title is not None or artist is not None
-        
-        def safe_float(val: Optional[str]) -> Optional[float]:
-            try:
-                return float(val) if val else None
-            except ValueError:
-                return None
+        """Fetches all required metadata in a single JSON call using get-raw."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'nowplaying-cli', 'get-raw',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await proc.communicate()
+            val = stdout.decode().strip()
+            
+            if not val or val == "null":
+                return MediaState(is_active=False)
+                
+            import json
+            data = json.loads(val)
+            
+            title = data.get('kMRMediaRemoteNowPlayingInfoTitle')
+            artist = data.get('kMRMediaRemoteNowPlayingInfoArtist')
+            album = data.get('kMRMediaRemoteNowPlayingInfoAlbum')
+            playback_rate_raw = data.get('kMRMediaRemoteNowPlayingInfoPlaybackRate', 0)
+            elapsed = data.get('kMRMediaRemoteNowPlayingInfoElapsedTime')
+            duration = data.get('kMRMediaRemoteNowPlayingInfoDuration')
+            
+            def safe_float(v) -> Optional[float]:
+                if v is None or str(v) == "null": return None
+                try:
+                    return float(v)
+                except ValueError:
+                    return None
+                    
+            pb_rate = safe_float(playback_rate_raw) or 0.0
+            is_playing = pb_rate != 0.0
+            is_active = title is not None or artist is not None
+            
+            def format_time(seconds: Optional[float]) -> Optional[str]:
+                if seconds is None:
+                    return None
+                s = int(seconds)
+                h = s // 3600
+                m = (s % 3600) // 60
+                sec = s % 60
+                return f"{h:02d}:{m:02d}:{sec:02d}"
 
-        def format_time(seconds: Optional[float]) -> Optional[str]:
-            if seconds is None:
-                return None
-            s = int(seconds)
-            h = s // 3600
-            m = (s % 3600) // 60
-            sec = s % 60
-            return f"{h:02d}:{m:02d}:{sec:02d}"
-
-        elapsed_val = safe_float(elapsed)
-        duration_val = safe_float(duration)
-        
-        return MediaState(
-            title=title,
-            artist=artist,
-            album=album,
-            is_playing=is_playing,
-            is_active=is_active,
-            elapsed_time=elapsed_val,
-            duration=duration_val,
-            elapsed_formatted=format_time(elapsed_val),
-            duration_formatted=format_time(duration_val)
-        )
+            elapsed_val = safe_float(elapsed)
+            duration_val = safe_float(duration)
+            
+            return MediaState(
+                title=title if title != "null" else None,
+                artist=artist if artist != "null" else None,
+                album=album if album != "null" else None,
+                is_playing=is_playing,
+                is_active=is_active,
+                playback_rate=pb_rate,
+                elapsed_time=elapsed_val,
+                duration=duration_val,
+                elapsed_formatted=format_time(elapsed_val),
+                duration_formatted=format_time(duration_val)
+            )
+        except Exception as e:
+            return MediaState(is_active=False)
 
 tracker = MediaTracker()
 
@@ -126,16 +143,45 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 current_state_cache = None
+last_raw_elapsed = None
+last_update_time = None
 
 async def state_broadcaster():
-    global current_state_cache
+    global current_state_cache, last_raw_elapsed, last_update_time
     while True:
         try:
+            now = time.time()
             new_state = await tracker.get_current_state()
-            # Broadcast on any change (including elapsedTime updates every second)
+            raw_elapsed = new_state.elapsed_time
+            
+            # Hybrid approach: Increment based on playback rate if CLI is stuck
+            if current_state_cache and new_state.title == current_state_cache.title:
+                if raw_elapsed == last_raw_elapsed:
+                    # CLI is stuck
+                    if new_state.is_playing and current_state_cache.elapsed_time is not None and last_update_time is not None:
+                        delta = now - last_update_time
+                        new_state.elapsed_time = current_state_cache.elapsed_time + (delta * new_state.playback_rate)
+                        
+                        # Reformat time
+                        s = int(new_state.elapsed_time)
+                        h = s // 3600
+                        m = (s % 3600) // 60
+                        sec = s % 60
+                        new_state.elapsed_formatted = f"{h:02d}:{m:02d}:{sec:02d}"
+                else:
+                    # CLI actually updated
+                    last_raw_elapsed = raw_elapsed
+            else:
+                last_raw_elapsed = raw_elapsed
+                
+            last_update_time = now
+
+            print(f"Elapsed Time: {new_state.elapsed_formatted} (Raw: {raw_elapsed})")
+            
             if new_state != current_state_cache:
                 current_state_cache = new_state
                 await manager.broadcast(new_state.model_dump())
+                
         except Exception as e:
             print(f"Error in broadcaster: {e}")
         await asyncio.sleep(1)
