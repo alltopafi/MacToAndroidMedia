@@ -12,6 +12,7 @@ data class MediaState(
     val title: String? = null,
     val artist: String? = null,
     val album: String? = null,
+    val artworkBase64: String? = null,
     val isPlaying: Boolean = false,
     val isActive: Boolean = false,
     val isConnected: Boolean = false
@@ -66,6 +67,7 @@ class MacMediaClient(private val ipAddress: String, private val onStateChanged: 
                         title = json.optString("title").takeIf { it != "null" && it.isNotEmpty() },
                         artist = json.optString("artist").takeIf { it != "null" && it.isNotEmpty() },
                         album = json.optString("album").takeIf { it != "null" && it.isNotEmpty() },
+                        artworkBase64 = json.optString("artwork").takeIf { it != "null" && it.isNotEmpty() },
                         isPlaying = json.optBoolean("is_playing", false),
                         isActive = json.optBoolean("is_active", false),
                         isConnected = true

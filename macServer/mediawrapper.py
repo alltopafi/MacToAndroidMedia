@@ -19,6 +19,7 @@ class MediaState(BaseModel):
     duration: Optional[float] = None
     duration_formatted: Optional[str] = None
     elapsed_formatted: Optional[str] = None
+    artwork: Optional[str] = None
 
 class MediaTracker:
     """Asynchronous tracker for macOS media state via nowplaying-cli."""
@@ -34,29 +35,6 @@ class MediaTracker:
             await proc.wait()
         except FileNotFoundError:
             raise RuntimeError("Error: 'nowplaying-cli' not found.")
-
-    async def get_artwork(self) -> Optional[bytes]:
-        """Fetches and decodes the current album artwork."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                'nowplaying-cli', 'get-raw',
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            stdout, _ = await proc.communicate()
-            val = stdout.decode().strip()
-            if not val or val == "null":
-                return None
-                
-            import json
-            data = json.loads(val)
-            b64_data = data.get('kMRMediaRemoteNowPlayingInfoArtworkData')
-            
-            if not b64_data or b64_data == "null":
-                return None
-            return base64.b64decode(b64_data)
-        except Exception:
-            return None
 
     async def get_current_state(self) -> MediaState:
         """Fetches all required metadata in a single JSON call using get-raw."""
@@ -81,6 +59,10 @@ class MediaTracker:
             playback_rate_raw = data.get('kMRMediaRemoteNowPlayingInfoPlaybackRate', 0)
             elapsed = data.get('kMRMediaRemoteNowPlayingInfoElapsedTime')
             duration = data.get('kMRMediaRemoteNowPlayingInfoDuration')
+            artwork_b64 = data.get('kMRMediaRemoteNowPlayingInfoArtworkData')
+            
+            if artwork_b64 == "null":
+                artwork_b64 = None
             
             def safe_float(v) -> Optional[float]:
                 if v is None or str(v) == "null": return None
@@ -115,7 +97,8 @@ class MediaTracker:
                 elapsed_time=elapsed_val,
                 duration=duration_val,
                 elapsed_formatted=format_time(elapsed_val),
-                duration_formatted=format_time(duration_val)
+                duration_formatted=format_time(duration_val),
+                artwork=artwork_b64
             )
         except Exception as e:
             return MediaState(is_active=False)
@@ -179,8 +162,13 @@ async def state_broadcaster():
             print(f"Elapsed Time: {new_state.elapsed_formatted} (Raw: {raw_elapsed})")
             
             if new_state != current_state_cache:
+                payload = new_state.model_dump()
+                # Null out the artwork if the title hasn't changed to save websocket bandwidth
+                if current_state_cache and new_state.title == current_state_cache.title:
+                    payload['artwork'] = None
+                
                 current_state_cache = new_state
-                await manager.broadcast(new_state.model_dump())
+                await manager.broadcast(payload)
                 
         except Exception as e:
             print(f"Error in broadcaster: {e}")
@@ -209,16 +197,6 @@ async def get_state():
     """Returns the current macOS media playback state."""
     state = await tracker.get_current_state()
     return state
-
-@app.get("/api/artwork")
-async def get_artwork():
-    """Returns the current media artwork as a JPEG image."""
-    img_bytes = await tracker.get_artwork()
-    if not img_bytes:
-        raise HTTPException(status_code=404, detail="No artwork available for the current media.")
-    
-    # Return directly as an image so it renders natively in the browser
-    return Response(content=img_bytes, media_type="image/jpeg")
 
 @app.post("/api/control/{action}")
 async def control_media(action: str):

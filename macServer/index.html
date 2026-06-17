@@ -226,11 +226,9 @@
                     playIcon.className = 'fas fa-play';
                 }
 
-                // Update artwork if title changed
-                if (state.title !== lastArtworkTitle) {
-                    lastArtworkTitle = state.title;
-                    const timestamp = new Date().getTime();
-                    document.getElementById('artwork').src = `${API_BASE}/api/artwork?t=${timestamp}`;
+                // Update artwork if provided in payload
+                if (state.artwork) {
+                    document.getElementById('artwork').src = `data:image/jpeg;base64,${state.artwork}`;
                 }
             };
         }
