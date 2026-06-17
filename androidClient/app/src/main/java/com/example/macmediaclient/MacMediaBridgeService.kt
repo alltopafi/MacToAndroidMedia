@@ -205,8 +205,8 @@ class MacMediaBridgeService : MediaSessionService() {
         dummyPlayer.prepare()
 
         macClient?.connect()
-        // Send initial state update to ensure UI knows we're connecting
-        macClient?.let { sendStateUpdate(MediaState(isConnected = false)) }
+        // Send initial state update to ensure UI knows we're starting to connect
+        sendStateUpdate(MediaState(isConnected = false, isActive = false))
     }
     
     private fun sendStateUpdate(state: MediaState) {

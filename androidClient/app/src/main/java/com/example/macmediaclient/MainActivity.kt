@@ -299,10 +299,17 @@ class MainActivity : AppCompatActivity() {
             statusText.text = if (isConnected) " Connected to Mac" else " Disconnected"
         }
 
-        Log.d("MainActivity", "Current isActive: $isActive, lastState.isActive: ${lastState.isActive}")
-        if (isActive != lastState.isActive) {
-            Log.d("MainActivity", "Setting mediaControlsLayout visibility to: ${if (isActive) "VISIBLE" else "GONE"}")
-            mediaControlsLayout.visibility = if (isActive) View.VISIBLE else View.GONE
+        // Force visibility check on every update if isActive is true
+        if (isActive) {
+            if (mediaControlsLayout.visibility != View.VISIBLE) {
+                Log.d("MainActivity", "Forcing mediaControlsLayout to VISIBLE")
+                mediaControlsLayout.visibility = View.VISIBLE
+            }
+        } else {
+            if (mediaControlsLayout.visibility != View.GONE) {
+                Log.d("MainActivity", "Forcing mediaControlsLayout to GONE")
+                mediaControlsLayout.visibility = View.GONE
+            }
         }
 
         if (isActive) {
