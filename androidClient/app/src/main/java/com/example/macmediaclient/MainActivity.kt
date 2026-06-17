@@ -249,7 +249,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupListeners() {
         playPauseBtn.setOnClickListener {
-            startService(Intent(this, MacMediaBridgeService::class.java).apply { action = "TOGGLE_PLAYBACK" })
+            val action = if (lastState.isPlaying) "PAUSE" else "PLAY"
+            startService(Intent(this, MacMediaBridgeService::class.java).apply {
+                this.action = action
+            })
         }
         nextBtn.setOnClickListener {
             startService(Intent(this, MacMediaBridgeService::class.java).apply { action = "NEXT" })

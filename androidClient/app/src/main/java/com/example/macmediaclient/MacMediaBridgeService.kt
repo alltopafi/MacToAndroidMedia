@@ -88,9 +88,14 @@ class MacMediaBridgeService : MediaSessionService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             "TOGGLE_PLAYBACK" -> {
-                if (dummyPlayer.isPlaying) macClient?.postCommand("pause")
-                else macClient?.postCommand("play")
+                if (dummyPlayer.playWhenReady) {
+                    macClient?.postCommand("pause")
+                } else {
+                    macClient?.postCommand("play")
+                }
             }
+            "PLAY" -> macClient?.postCommand("play")
+            "PAUSE" -> macClient?.postCommand("pause")
             "NEXT" -> macClient?.postCommand("next")
             "PREVIOUS" -> macClient?.postCommand("previous")
             else -> {
