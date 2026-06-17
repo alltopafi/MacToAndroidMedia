@@ -159,7 +159,7 @@ async def state_broadcaster():
                 
             last_update_time = now
 
-            print(f"Elapsed Time: {new_state.elapsed_formatted} (Raw: {raw_elapsed})")
+            # print(f"Elapsed Time: {new_state.elapsed_formatted} (Raw: {raw_elapsed})")
             
             if new_state != current_state_cache:
                 payload = new_state.model_dump()

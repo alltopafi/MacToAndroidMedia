@@ -32,6 +32,8 @@ class MacMediaBridgeService : MediaSessionService() {
         const val EXTRA_ARTIST = "artist"
         const val EXTRA_ALBUM = "album"
         const val EXTRA_ARTWORK = "artwork"
+        const val EXTRA_POSITION = "position"
+        const val EXTRA_DURATION = "duration"
         const val EXTRA_IS_PLAYING = "is_playing"
         const val EXTRA_IS_ACTIVE = "is_active"
     }
@@ -115,6 +117,8 @@ class MacMediaBridgeService : MediaSessionService() {
                 putExtra(EXTRA_ARTIST, state.artist)
                 putExtra(EXTRA_ALBUM, state.album)
                 putExtra(EXTRA_ARTWORK, state.artworkBase64)
+                putExtra(EXTRA_POSITION, state.position)
+                putExtra(EXTRA_DURATION, state.duration)
                 putExtra(EXTRA_IS_PLAYING, state.isPlaying)
                 putExtra(EXTRA_IS_ACTIVE, state.isActive)
             }

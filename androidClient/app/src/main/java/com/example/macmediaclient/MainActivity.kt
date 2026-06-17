@@ -12,11 +12,14 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.RelativeLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import coil.load
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var statusIndicator: ImageView
@@ -28,13 +31,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playPauseBtn: Button
     private lateinit var nextBtn: Button
     private lateinit var prevBtn: Button
+    private lateinit var progressBar: ProgressBar
+    private lateinit var elapsedTimeText: TextView
+    private lateinit var totalTimeText: TextView
     private lateinit var mediaControlsLayout: LinearLayout
     private lateinit var connectionLayout: LinearLayout
     private lateinit var ipInput: EditText
 
     private var currentIp: String = "192.168.1.12"
     
-    // Cached state to prevent redundant updates
     private var lastState = MediaStateCache()
 
     private data class MediaStateCache(
@@ -44,7 +49,9 @@ class MainActivity : AppCompatActivity() {
         val artist: String? = null,
         val album: String? = null,
         val isPlaying: Boolean = false,
-        val artworkBase64: String? = null
+        val artworkBase64: String? = null,
+        val position: Long = 0,
+        val duration: Long = 0
     )
 
     private val stateReceiver = object : BroadcastReceiver() {
@@ -54,10 +61,12 @@ class MainActivity : AppCompatActivity() {
             val artist = intent?.getStringExtra(MacMediaBridgeService.EXTRA_ARTIST)
             val album = intent?.getStringExtra(MacMediaBridgeService.EXTRA_ALBUM)
             val artworkBase64 = intent?.getStringExtra(MacMediaBridgeService.EXTRA_ARTWORK)
+            val position = intent?.getLongExtra(MacMediaBridgeService.EXTRA_POSITION, 0) ?: 0L
+            val duration = intent?.getLongExtra(MacMediaBridgeService.EXTRA_DURATION, 0) ?: 0L
             val isPlaying = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_IS_PLAYING, false) ?: false
             val isActive = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_IS_ACTIVE, false) ?: false
 
-            updateUI(isConnected, isActive, title, artist, album, artworkBase64, isPlaying)
+            updateUI(isConnected, isActive, title, artist, album, artworkBase64, position, duration, isPlaying)
         }
     }
 
@@ -126,10 +135,60 @@ class MainActivity : AppCompatActivity() {
 
         artworkImage = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(600, 600).apply {
-                setMargins(0, 64, 0, 64)
+                setMargins(0, 64, 0, 32)
             }
             scaleType = ImageView.ScaleType.CENTER_CROP
         }
+
+        // Progress Section
+        val progressContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setPadding(0, 32, 0, 32)
+        }
+
+        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val timeLabelsLayout = RelativeLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        elapsedTimeText = TextView(this).apply {
+            text = "0:00"
+            layoutParams = RelativeLayout.LayoutParams(
+                RelativeLayout.LayoutParams.WRAP_CONTENT,
+                RelativeLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                addRule(RelativeLayout.ALIGN_PARENT_LEFT)
+            }
+        }
+
+        totalTimeText = TextView(this).apply {
+            text = "0:00"
+            layoutParams = RelativeLayout.LayoutParams(
+                RelativeLayout.LayoutParams.WRAP_CONTENT,
+                RelativeLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
+            }
+        }
+
+        timeLabelsLayout.addView(elapsedTimeText)
+        timeLabelsLayout.addView(totalTimeText)
+        
+        progressContainer.addView(progressBar)
+        progressContainer.addView(timeLabelsLayout)
         
         titleText = TextView(this).apply {
             textSize = 24f
@@ -162,6 +221,7 @@ class MainActivity : AppCompatActivity() {
         playbackControls.addView(nextBtn)
 
         mediaControlsLayout.addView(artworkImage)
+        mediaControlsLayout.addView(progressContainer)
         mediaControlsLayout.addView(titleText)
         mediaControlsLayout.addView(artistText)
         mediaControlsLayout.addView(albumText)
@@ -172,7 +232,7 @@ class MainActivity : AppCompatActivity() {
             text = "Stop Service"
             setOnClickListener {
                 stopService(Intent(this@MainActivity, MacMediaBridgeService::class.java))
-                updateUI(false, false, null, null, null, null, false)
+                updateUI(false, false, null, null, null, null, 0, 0, false)
             }
         }
         rootLayout.addView(stopBtn)
@@ -189,9 +249,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupListeners() {
         playPauseBtn.setOnClickListener {
-            startService(Intent(this, MacMediaBridgeService::class.java).apply {
-                action = "TOGGLE_PLAYBACK"
-            })
+            startService(Intent(this, MacMediaBridgeService::class.java).apply { action = "TOGGLE_PLAYBACK" })
         }
         nextBtn.setOnClickListener {
             startService(Intent(this, MacMediaBridgeService::class.java).apply { action = "NEXT" })
@@ -201,35 +259,51 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateUI(isConnected: Boolean, isActive: Boolean, title: String?, artist: String?, album: String?, artworkBase64: String?, isPlaying: Boolean) {
-        // 1. Connection Status Update
+    private fun updateUI(
+        isConnected: Boolean, 
+        isActive: Boolean, 
+        title: String?, 
+        artist: String?, 
+        album: String?, 
+        artworkBase64: String?, 
+        position: Long, 
+        duration: Long, 
+        isPlaying: Boolean
+    ) {
+        // Detect if the server is sending seconds or milliseconds
+        // If duration is > 0 and < 10000, it's almost certainly seconds
+        val isSeconds = duration > 0 && duration < 10000
+        val posMs = if (isSeconds) position * 1000 else position
+        val durMs = if (isSeconds) duration * 1000 else duration
+
         if (isConnected != lastState.isConnected) {
-            if (isConnected) {
-                statusIndicator.setBackgroundColor(Color.GREEN)
-                statusText.text = " Connected to Mac"
-            } else {
-                statusIndicator.setBackgroundColor(Color.RED)
-                statusText.text = " Disconnected"
-            }
+            statusIndicator.setBackgroundColor(if (isConnected) Color.GREEN else Color.RED)
+            statusText.text = if (isConnected) " Connected to Mac" else " Disconnected"
         }
 
-        // 2. Active Session Visibility
         if (isActive != lastState.isActive) {
             mediaControlsLayout.visibility = if (isActive) View.VISIBLE else View.GONE
         }
 
         if (isActive) {
-            // 3. Metadata Updates
             if (title != lastState.title) titleText.text = title ?: "No Title"
             if (artist != lastState.artist) artistText.text = artist ?: "Unknown Artist"
             if (album != lastState.album) albumText.text = album ?: "Unknown Album"
-
-            // 4. Playback State
-            if (isPlaying != lastState.isPlaying) {
-                playPauseBtn.text = if (isPlaying) "Pause" else "Play"
-            }
+            if (isPlaying != lastState.isPlaying) playPauseBtn.text = if (isPlaying) "Pause" else "Play"
             
-            // 5. Artwork Update (from WebSocket Base64)
+            // Progress Bar and Timers
+            if (durMs > 0) {
+                progressBar.max = durMs.toInt()
+                // Ensure we use the converted posMs for progress and label
+                progressBar.progress = posMs.toInt()
+                elapsedTimeText.text = formatTime(posMs)
+                totalTimeText.text = formatTime(durMs)
+            } else {
+                progressBar.progress = 0
+                elapsedTimeText.text = "0:00"
+                totalTimeText.text = "0:00"
+            }
+
             if (artworkBase64 != null && artworkBase64 != lastState.artworkBase64) {
                 try {
                     val decodedString = android.util.Base64.decode(artworkBase64, android.util.Base64.DEFAULT)
@@ -244,16 +318,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Cache the current state
         lastState = lastState.copy(
-            isConnected = isConnected,
-            isActive = isActive,
-            title = title,
-            artist = artist,
-            album = album,
-            isPlaying = isPlaying,
-            artworkBase64 = artworkBase64
+            isConnected = isConnected, isActive = isActive, title = title, artist = artist,
+            album = album, isPlaying = isPlaying, artworkBase64 = artworkBase64,
+            position = position, duration = duration
         )
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return String.format(Locale.getDefault(), "%d:%02d", minutes, seconds)
     }
 
     override fun onDestroy() {
