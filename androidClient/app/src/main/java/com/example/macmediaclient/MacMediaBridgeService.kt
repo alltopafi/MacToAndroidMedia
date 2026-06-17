@@ -29,6 +29,8 @@ import android.app.PendingIntent
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.core.app.NotificationCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 
 class MacMediaBridgeService : MediaSessionService() {
     companion object {
@@ -49,7 +51,7 @@ class MacMediaBridgeService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private lateinit var dummyPlayer: ExoPlayer
     private var macClient: MacMediaClient? = null
-    private var currentIp: String = "192.168.1.12"
+    private var currentIp: String = "Jesses-MacBook-Pro.local"
     private var lastIsPlaying: Boolean = false
     private var wasConnected: Boolean = false
     // Valid silent WAV data URI to avoid resource corruption issues
@@ -60,8 +62,28 @@ class MacMediaBridgeService : MediaSessionService() {
         super.onCreate()
         Log.d("MacMediaBridgeService", "onCreate called")
         dummyPlayer = ExoPlayer.Builder(this).build()
+        
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+        dummyPlayer.setAudioAttributes(audioAttributes, true)
         dummyPlayer.repeatMode = Player.REPEAT_MODE_ONE // Keep the silent track looping
         
+        // Initial setup to ensure the player has a timeline and media item immediately
+        val initMediaItem = MediaItem.Builder()
+            .setMediaId("mac_media_init")
+            .setUri(SILENT_URI)
+            .setMimeType(MimeTypes.AUDIO_WAV)
+            .setMediaMetadata(MediaMetadata.Builder()
+                .setTitle("Connecting to Mac...")
+                .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                .build())
+            .build()
+        dummyPlayer.setMediaItem(initMediaItem)
+        dummyPlayer.prepare()
+        dummyPlayer.playWhenReady = true // Start playing the silent track to trigger the media notification
+
         dummyPlayer.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("MacMediaBridgeService", "Player error: ${error.errorCodeName} (${error.errorCode}): ${error.message}", error)
@@ -103,6 +125,8 @@ class MacMediaBridgeService : MediaSessionService() {
                     .add(COMMAND_SEEK_TO_NEXT)
                     .add(COMMAND_SEEK_TO_PREVIOUS)
                     .add(COMMAND_STOP)
+                    .add(COMMAND_GET_METADATA)
+                    .add(COMMAND_GET_TIMELINE)
                     .build()
             }
         }
@@ -113,6 +137,8 @@ class MacMediaBridgeService : MediaSessionService() {
         mediaSession = MediaSession.Builder(this, forwardingPlayer)
             .setSessionActivity(sessionActivityPendingIntent)
             .build()
+        
+        mediaSession?.let { addSession(it) }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -223,20 +249,6 @@ class MacMediaBridgeService : MediaSessionService() {
             }
         }
         
-        // Initial setup to ensure the player has a timeline, which helps the notification appear
-        val mediaItem = MediaItem.Builder()
-            .setMediaId("mac_media_init")
-            .setUri(SILENT_URI)
-            .setMimeType(MimeTypes.AUDIO_WAV)
-            .setMediaMetadata(MediaMetadata.Builder()
-                .setTitle("Connecting to Mac...")
-                .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                .build())
-            .build()
-        dummyPlayer.setMediaItem(mediaItem)
-        dummyPlayer.prepare()
-        dummyPlayer.playWhenReady = true // Start immediately to trigger foreground
-
         macClient?.connect()
         // Send initial state update to ensure UI knows we're starting to connect
         sendStateUpdate(MediaState(isConnected = false, isActive = false))

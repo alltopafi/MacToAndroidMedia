@@ -111,7 +111,7 @@ class MainActivity : AppCompatActivity() {
         }
         ipInput = EditText(this).apply {
             hint = "Mac IP Address"
-            setText("192.168.1.12")
+            setText("Jesses-MacBook-Pro.local")
         }
         val connectBtn = Button(this).apply {
             text = "Connect to Mac"
