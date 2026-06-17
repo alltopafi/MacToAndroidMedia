@@ -40,6 +40,7 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 
+    implementation("androidx.media:media:1.7.0") // Or the latest version
     // Jetpack Media3
     val media3_version = "1.3.1"
     implementation("androidx.media3:media3-exoplayer:$media3_version")

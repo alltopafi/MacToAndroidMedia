@@ -31,6 +31,8 @@ class MacMediaClient(private val ipAddress: String, private val onStateChanged: 
     private var webSocket: WebSocket? = null
     private var lastState = MediaState()
 
+    fun isConnected(): Boolean = lastState.isConnected
+
     private fun getBaseUrl(protocol: String): String {
         val trimmed = ipAddress.trim()
             .removePrefix("http://")

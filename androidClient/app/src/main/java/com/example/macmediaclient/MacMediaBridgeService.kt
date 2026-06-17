@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
@@ -12,11 +13,11 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.CommandButton
 import androidx.media3.common.util.UnstableApi
+import androidx.annotation.OptIn
 import android.os.Handler
 import android.os.Bundle
 import android.os.Looper
 import android.util.Log
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.ListenableFuture
@@ -41,12 +42,34 @@ class MacMediaBridgeService : MediaSessionService() {
     private lateinit var dummyPlayer: ExoPlayer
     private var macClient: MacMediaClient? = null
     private var currentIp: String = "192.168.1.12"
+    private var lastIsPlaying: Boolean = false
+    // Valid silent WAV
+    private val SILENT_URI = Uri.parse("data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA")
 
+    @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
         Log.d("MacMediaBridgeService", "onCreate called")
         dummyPlayer = ExoPlayer.Builder(this).build()
         dummyPlayer.repeatMode = Player.REPEAT_MODE_ONE // Keep the silent track looping
+        
+        dummyPlayer.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e("MacMediaBridgeService", "Player error: ${error.errorCodeName} (${error.errorCode}): ${error.message}", error)
+                if (error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED || 
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE) {
+                    
+                    Log.d("MacMediaBridgeService", "Attempting recovery...")
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        dummyPlayer.prepare()
+                        if (macClient?.isConnected() == true && lastIsPlaying) {
+                            dummyPlayer.play()
+                        }
+                    }, 1000)
+                }
+            }
+        })
         
         val forwardingPlayer = @UnstableApi object : ForwardingPlayer(dummyPlayer) {
             override fun seekToNext() {
@@ -55,23 +78,20 @@ class MacMediaBridgeService : MediaSessionService() {
             override fun seekToPrevious() {
                 macClient?.postCommand("previous")
             }
+            override fun play() {
+                macClient?.postCommand("play")
+            }
+            override fun pause() {
+                macClient?.postCommand("pause")
+            }
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands().buildUpon()
+                    .add(COMMAND_PLAY_PAUSE)
                     .add(COMMAND_SEEK_TO_NEXT)
                     .add(COMMAND_SEEK_TO_PREVIOUS)
                     .build()
             }
         }
-        
-        dummyPlayer.addListener(object : Player.Listener {
-            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) {
-                    Log.d("MacMediaBridgeService", "User requested play/pause: $playWhenReady")
-                    if (playWhenReady) macClient?.postCommand("play")
-                    else macClient?.postCommand("pause")
-                }
-            }
-        })
         
         mediaSession = MediaSession.Builder(this, forwardingPlayer).build()
     }
@@ -116,18 +136,7 @@ class MacMediaBridgeService : MediaSessionService() {
         macClient = MacMediaClient(currentIp) { state ->
             Log.d("MacMediaBridgeService", "State changed: isConnected=${state.isConnected}, title=${state.title}")
             
-            val intent = Intent(ACTION_STATE_UPDATE).apply {
-                putExtra(EXTRA_CONNECTED, state.isConnected)
-                putExtra(EXTRA_TITLE, state.title)
-                putExtra(EXTRA_ARTIST, state.artist)
-                putExtra(EXTRA_ALBUM, state.album)
-                putExtra(EXTRA_ARTWORK, state.artworkBase64)
-                putExtra(EXTRA_POSITION, state.position)
-                putExtra(EXTRA_DURATION, state.duration)
-                putExtra(EXTRA_IS_PLAYING, state.isPlaying)
-                putExtra(EXTRA_IS_ACTIVE, state.isActive)
-            }
-            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+            sendStateUpdate(state)
 
             runOnUiThread {
                 if (!state.isActive) {
@@ -160,30 +169,62 @@ class MacMediaBridgeService : MediaSessionService() {
 
                 val builtMetadata = metadata.build()
 
-                val silentUri = Uri.parse("android.resource://${packageName}/${R.raw.silent}")
                 val mediaItem = MediaItem.Builder()
                     .setMediaId("mac_media")
                     .setMediaMetadata(builtMetadata)
-                    .setUri(silentUri)
+                    .setUri(SILENT_URI)
                     .build()
 
-                if (dummyPlayer.currentMediaItem?.mediaMetadata?.title != builtMetadata.title) {
+                val currentItem = dummyPlayer.currentMediaItem
+                if (currentItem?.mediaId != "mac_media") {
                     dummyPlayer.setMediaItem(mediaItem)
                     dummyPlayer.prepare()
-                } else {
+                } else if (currentItem.mediaMetadata.title != builtMetadata.title) {
+                    // Only replace if metadata changed significantly
                     dummyPlayer.replaceMediaItem(0, mediaItem)
                 }
 
+                lastIsPlaying = state.isPlaying
                 if (state.isPlaying) {
+                    dummyPlayer.playWhenReady = true
                     dummyPlayer.play()
                 } else {
+                    dummyPlayer.playWhenReady = false
                     dummyPlayer.pause()
                 }
             }
         }
+        
+        // Initial setup to ensure the player has a timeline, which helps the notification appear
+        val mediaItem = MediaItem.Builder()
+            .setMediaId("mac_media_init")
+            .setUri(SILENT_URI)
+            .setMimeType(MimeTypes.AUDIO_WAV)
+            .build()
+        dummyPlayer.setMediaItem(mediaItem)
+        dummyPlayer.prepare()
+
         macClient?.connect()
+        // Send initial state update to ensure UI knows we're connecting
+        macClient?.let { sendStateUpdate(MediaState(isConnected = false)) }
     }
     
+    private fun sendStateUpdate(state: MediaState) {
+        val intent = Intent(ACTION_STATE_UPDATE).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_CONNECTED, state.isConnected)
+            putExtra(EXTRA_TITLE, state.title)
+            putExtra(EXTRA_ARTIST, state.artist)
+            putExtra(EXTRA_ALBUM, state.album)
+            putExtra(EXTRA_ARTWORK, state.artworkBase64)
+            putExtra(EXTRA_POSITION, state.position)
+            putExtra(EXTRA_DURATION, state.duration)
+            putExtra(EXTRA_IS_PLAYING, state.isPlaying)
+            putExtra(EXTRA_IS_ACTIVE, state.isActive)
+        }
+        sendBroadcast(intent)
+    }
+
     private fun runOnUiThread(action: () -> Unit) {
         Handler(Looper.getMainLooper()).post(action)
     }

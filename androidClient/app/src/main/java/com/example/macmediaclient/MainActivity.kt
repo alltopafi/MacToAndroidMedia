@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -17,7 +19,6 @@ import android.widget.RelativeLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import coil.load
 import java.util.Locale
 
@@ -56,6 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     private val stateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            Log.d("MainActivity", "Received broadcast: ${intent?.action}")
             val isConnected = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_CONNECTED, false) ?: false
             val title = intent?.getStringExtra(MacMediaBridgeService.EXTRA_TITLE)
             val artist = intent?.getStringExtra(MacMediaBridgeService.EXTRA_ARTIST)
@@ -66,6 +68,7 @@ class MainActivity : AppCompatActivity() {
             val isPlaying = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_IS_PLAYING, false) ?: false
             val isActive = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_IS_ACTIVE, false) ?: false
 
+            Log.d("MainActivity", "State: isConnected=$isConnected, isActive=$isActive, title=$title")
             updateUI(isConnected, isActive, title, artist, album, artworkBase64, position, duration, isPlaying)
         }
     }
@@ -241,10 +244,21 @@ class MainActivity : AppCompatActivity() {
 
         setupListeners()
 
-        LocalBroadcastManager.getInstance(this).registerReceiver(
-            stateReceiver,
-            IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE)
-        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                stateReceiver,
+                IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE),
+                RECEIVER_EXPORTED
+            )
+        } else {
+            // Use 0 as the flag or handle older versions that don't support the flag but require the signature if targeting S+
+            // Actually for below Tiramisu, the single arg registerReceiver is usually fine unless targeting very high.
+            // To be safe and compliant with lint:
+            registerReceiver(
+                stateReceiver,
+                IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE)
+            )
+        }
     }
 
     private fun setupListeners() {
@@ -280,11 +294,14 @@ class MainActivity : AppCompatActivity() {
         val durMs = if (isSeconds) duration * 1000 else duration
 
         if (isConnected != lastState.isConnected) {
+            Log.d("MainActivity", "Updating connection status: $isConnected")
             statusIndicator.setBackgroundColor(if (isConnected) Color.GREEN else Color.RED)
             statusText.text = if (isConnected) " Connected to Mac" else " Disconnected"
         }
 
+        Log.d("MainActivity", "Current isActive: $isActive, lastState.isActive: ${lastState.isActive}")
         if (isActive != lastState.isActive) {
+            Log.d("MainActivity", "Setting mediaControlsLayout visibility to: ${if (isActive) "VISIBLE" else "GONE"}")
             mediaControlsLayout.visibility = if (isActive) View.VISIBLE else View.GONE
         }
 
@@ -337,6 +354,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(stateReceiver)
+        unregisterReceiver(stateReceiver)
     }
 }
