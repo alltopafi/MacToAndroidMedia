@@ -29,7 +29,8 @@ class MacMediaClient(private val ipAddress: String, private val onStateChanged: 
         .build()
         
     private var webSocket: WebSocket? = null
-    private var lastState = MediaState()
+    var lastState = MediaState()
+        private set
 
     fun isConnected(): Boolean = lastState.isConnected
 

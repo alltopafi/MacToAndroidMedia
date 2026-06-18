@@ -103,6 +103,32 @@ class MacMediaBridgeService : MediaSessionService() {
         })
         
         val forwardingPlayer = @UnstableApi object : ForwardingPlayer(dummyPlayer) {
+            override fun getDuration(): Long {
+                return macClient?.lastState?.duration?.let { dur ->
+                    if (dur > 0 && dur < 10000) dur * 1000 else dur
+                } ?: super.getDuration()
+            }
+
+            override fun getCurrentPosition(): Long {
+                return macClient?.lastState?.let { state ->
+                    val dur = state.duration
+                    val pos = state.position
+                    if (dur in 1..9999) pos * 1000 else pos
+                } ?: super.getCurrentPosition()
+            }
+
+            override fun isPlaying(): Boolean {
+                return macClient?.lastState?.isPlaying ?: super.isPlaying()
+            }
+
+            override fun getPlayWhenReady(): Boolean {
+                return macClient?.lastState?.isPlaying ?: super.getPlayWhenReady()
+            }
+
+            override fun getPlaybackState(): Int {
+                return if (macClient?.lastState?.isActive == true) STATE_READY else STATE_IDLE
+            }
+
             override fun seekToNext() {
                 macClient?.postCommand("next")
             }
@@ -232,12 +258,16 @@ class MacMediaBridgeService : MediaSessionService() {
                     dummyPlayer.setMediaItem(mediaItem)
                     dummyPlayer.prepare()
                 } else if (currentItem.mediaMetadata.title != builtMetadata.title || 
+                    currentItem.mediaMetadata.artist != builtMetadata.artist ||
                     currentItem.mediaMetadata.artworkData?.size != builtMetadata.artworkData?.size) {
                     // Replace item to refresh metadata in system UI
                     dummyPlayer.replaceMediaItem(0, mediaItem)
                 }
 
-                lastIsPlaying = state.isPlaying
+                if (state.isPlaying != dummyPlayer.playWhenReady) {
+                    dummyPlayer.playWhenReady = state.isPlaying
+                }
+                
                 if (state.isPlaying) {
                     if (dummyPlayer.playbackState == Player.STATE_IDLE) {
                         dummyPlayer.prepare()
@@ -246,6 +276,9 @@ class MacMediaBridgeService : MediaSessionService() {
                 } else {
                     dummyPlayer.pause()
                 }
+
+                // Force notification update
+                // Media3 handles this when playWhenReady or mediaItem changes
             }
         }
         

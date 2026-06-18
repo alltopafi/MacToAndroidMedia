@@ -245,24 +245,23 @@ class MainActivity : AppCompatActivity() {
 
         setupListeners()
 
+        val receiverFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            RECEIVER_NOT_EXPORTED
+        } else {
+            0
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
             }
-            registerReceiver(
-                stateReceiver,
-                IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE),
-                RECEIVER_EXPORTED
-            )
-        } else {
-            // Use 0 as the flag or handle older versions that don't support the flag but require the signature if targeting S+
-            // Actually for below Tiramisu, the single arg registerReceiver is usually fine unless targeting very high.
-            // To be safe and compliant with lint:
-            registerReceiver(
-                stateReceiver,
-                IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE)
-            )
         }
+        
+        registerReceiver(
+            stateReceiver,
+            IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE),
+            receiverFlags
+        )
     }
 
     private fun setupListeners() {
