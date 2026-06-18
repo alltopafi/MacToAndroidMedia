@@ -32,6 +32,9 @@ import android.app.NotificationManager
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 
 class MacMediaBridgeService : MediaSessionService() {
     companion object {
@@ -59,6 +62,7 @@ class MacMediaBridgeService : MediaSessionService() {
     private var lastTitle: String? = null
     private var lastArtist: String? = null
     private var lastAlbum: String? = null
+    private var lastArtworkId: Int = 0 // Track unique artwork occurrences
     // Valid silent WAV data URI to avoid resource corruption issues
     private val SILENT_URI = Uri.parse("data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEARKwAAESsAAABAAgAZGF0YQgAAACAgICAgICAgA==")
 
@@ -248,8 +252,13 @@ class MacMediaBridgeService : MediaSessionService() {
             val artworkChanged = state.artworkBase64 != lastArtworkBase64
             val playingChanged = state.isPlaying != lastIsPlaying
 
-            // Send state update BEFORE runOnUiThread, but use the updated metadata flags
-            sendStateUpdate(state)
+            if (artworkChanged) {
+                lastArtworkBase64 = state.artworkBase64
+                lastArtworkId++ // Increment to signal new artwork
+            }
+
+            // Send state update BEFORE runOnUiThread
+            sendStateUpdate(state, artworkChanged)
 
             if (!titleChanged && !artistChanged && !albumChanged && !artworkChanged && !playingChanged) {
                 // Check if we need to update player activity status even if metadata is same
@@ -343,20 +352,40 @@ class MacMediaBridgeService : MediaSessionService() {
         
         macClient?.connect()
         // Send initial state update to ensure UI knows we're starting to connect
-        sendStateUpdate(MediaState(isConnected = false, isActive = false))
+        sendStateUpdate(MediaState(isConnected = false, isActive = false), artworkChanged = false)
     }
     
-    private fun sendStateUpdate(state: MediaState) {
+    private fun sendStateUpdate(state: MediaState, artworkChanged: Boolean) {
         val intent = Intent(ACTION_STATE_UPDATE).apply {
             setPackage(packageName)
             putExtra(EXTRA_CONNECTED, state.isConnected)
             putExtra(EXTRA_TITLE, state.title)
             putExtra(EXTRA_ARTIST, state.artist)
             putExtra(EXTRA_ALBUM, state.album)
-            // Only send artwork if it's different from what we last sent
-            if (state.artworkBase64 != null && state.artworkBase64 != lastArtworkBase64) {
-                putExtra(EXTRA_ARTWORK, state.artworkBase64)
+            
+            // Only send artwork if it's new and small enough, or compress it
+            if (artworkChanged && state.artworkBase64 != null) {
+                val artwork = state.artworkBase64
+                if (artwork.length > 100_000) { // If > 100KB base64
+                    try {
+                        val bytes = android.util.Base64.decode(artwork, android.util.Base64.DEFAULT)
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bitmap != null) {
+                            val stream = ByteArrayOutputStream()
+                            // Shrink it down for the UI preview
+                            val scaled = Bitmap.createScaledBitmap(bitmap, 400, 400, true)
+                            scaled.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                            val compressedBase64 = android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.DEFAULT)
+                            putExtra(EXTRA_ARTWORK, compressedBase64)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MacMediaBridgeService", "Failed to compress artwork for broadcast", e)
+                    }
+                } else {
+                    putExtra(EXTRA_ARTWORK, artwork)
+                }
             }
+
             putExtra(EXTRA_POSITION, state.position)
             putExtra(EXTRA_DURATION, state.duration)
             putExtra(EXTRA_IS_PLAYING, state.isPlaying)
