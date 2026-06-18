@@ -21,6 +21,7 @@ import android.os.Build
 import android.content.Context
 import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import kotlinx.coroutines.cancel
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.ListenableFuture
@@ -35,6 +36,10 @@ import androidx.media3.common.C
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class MacMediaBridgeService : MediaSessionService() {
     companion object {
@@ -63,6 +68,7 @@ class MacMediaBridgeService : MediaSessionService() {
     private var lastArtist: String? = null
     private var lastAlbum: String? = null
     private var lastArtworkId: Int = 0 // Track unique artwork occurrences
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     // Valid silent WAV data URI to avoid resource corruption issues
     private val SILENT_URI = Uri.parse("data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEARKwAAESsAAABAAgAZGF0YQgAAACAgICAgICAgA==")
 
@@ -257,8 +263,15 @@ class MacMediaBridgeService : MediaSessionService() {
                 lastArtworkId++ // Increment to signal new artwork
             }
 
-            // Send state update BEFORE runOnUiThread
-            sendStateUpdate(state, artworkChanged)
+            // Move HEAVY work (compression and state update) to background thread
+            // using a Coroutine for better lifecycle management
+            serviceScope.launch {
+                try {
+                    sendStateUpdate(state, artworkChanged)
+                } catch (e: Exception) {
+                    Log.e("MacMediaBridgeService", "Error in background state update", e)
+                }
+            }
 
             if (!titleChanged && !artistChanged && !albumChanged && !artworkChanged && !playingChanged) {
                 // Check if we need to update player activity status even if metadata is same
@@ -431,6 +444,7 @@ class MacMediaBridgeService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         macClient?.disconnect()
         mediaSession?.run {
             player.release()
