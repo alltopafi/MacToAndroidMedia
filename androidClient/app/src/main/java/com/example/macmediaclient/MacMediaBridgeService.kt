@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.Build
 import android.content.Context
 import android.util.Log
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.ListenableFuture
@@ -54,6 +55,10 @@ class MacMediaBridgeService : MediaSessionService() {
     private var currentIp: String = "Jesses-MacBook-Pro.local"
     private var lastIsPlaying: Boolean = false
     private var wasConnected: Boolean = false
+    private var lastArtworkBase64: String? = null
+    private var lastTitle: String? = null
+    private var lastArtist: String? = null
+    private var lastAlbum: String? = null
     // Valid silent WAV data URI to avoid resource corruption issues
     private val SILENT_URI = Uri.parse("data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEARKwAAESsAAABAAgAZGF0YQgAAACAgICAgICAgA==")
 
@@ -155,6 +160,10 @@ class MacMediaBridgeService : MediaSessionService() {
                     .add(COMMAND_GET_TIMELINE)
                     .build()
             }
+
+            override fun getMediaMetadata(): MediaMetadata {
+                return dummyPlayer.mediaMetadata
+            }
         }
         
         val sessionActivityIntent = Intent(this, MainActivity::class.java)
@@ -177,6 +186,7 @@ class MacMediaBridgeService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d("MacMediaBridgeService", "onStartCommand action: ${intent?.action}")
         when (intent?.action) {
             "TOGGLE_PLAYBACK" -> {
                 if (dummyPlayer.playWhenReady) {
@@ -193,8 +203,14 @@ class MacMediaBridgeService : MediaSessionService() {
                 Log.d("MacMediaBridgeService", "Handling PAUSE command")
                 macClient?.postCommand("pause")
             }
-            "NEXT" -> macClient?.postCommand("next")
-            "PREVIOUS" -> macClient?.postCommand("previous")
+            "NEXT" -> {
+                Log.d("MacMediaBridgeService", "Handling NEXT command")
+                macClient?.postCommand("next")
+            }
+            "PREVIOUS" -> {
+                Log.d("MacMediaBridgeService", "Handling PREVIOUS command")
+                macClient?.postCommand("previous")
+            }
             else -> {
                 val ip = intent?.getStringExtra("IP_ADDRESS")
                 Log.d("MacMediaBridgeService", "onStartCommand with IP: $ip")
@@ -211,57 +227,103 @@ class MacMediaBridgeService : MediaSessionService() {
         Log.d("MacMediaBridgeService", "Starting client for IP: $currentIp")
         macClient?.disconnect()
         wasConnected = false
+        lastArtworkBase64 = null
+        lastTitle = null
+        lastArtist = null
+        lastAlbum = null
+        
         macClient = MacMediaClient(currentIp) { state ->
-            Log.d("MacMediaBridgeService", "State changed: isConnected=${state.isConnected}, title=${state.title}")
+            // Skip redundant processing if metadata and play state haven't changed
+            // We still want to send state updates for progress (position)
             
             if (state.isConnected && !wasConnected) {
                 showConnectionNotification()
             }
             wasConnected = state.isConnected
 
+            // Update metadata tracking IMMEDIATELY to avoid redundant large broadcasts
+            val titleChanged = state.title != lastTitle
+            val artistChanged = state.artist != lastArtist
+            val albumChanged = state.album != lastAlbum
+            val artworkChanged = state.artworkBase64 != lastArtworkBase64
+            val playingChanged = state.isPlaying != lastIsPlaying
+
+            // Send state update BEFORE runOnUiThread, but use the updated metadata flags
             sendStateUpdate(state)
 
-            runOnUiThread {
-                if (!state.isActive) {
-                    dummyPlayer.pause()
-                    return@runOnUiThread
+            if (!titleChanged && !artistChanged && !albumChanged && !artworkChanged && !playingChanged) {
+                // Check if we need to update player activity status even if metadata is same
+                runOnUiThread {
+                    val playerIsActive = dummyPlayer.playbackState != Player.STATE_IDLE
+                    if (state.isActive != playerIsActive) {
+                        if (!state.isActive) dummyPlayer.pause()
+                    }
                 }
+                return@MacMediaClient
+            }
 
-                val metadata = MediaMetadata.Builder()
-                    .setTitle(state.title ?: "Unknown Title")
-                    .setArtist(state.artist ?: "Unknown Artist")
-                    .setAlbumTitle(state.album ?: "Unknown Album")
-                    .setIsPlayable(true)
-                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                
+            lastTitle = state.title
+            lastArtist = state.artist
+            lastAlbum = state.album
+            lastIsPlaying = state.isPlaying
+            if (artworkChanged) {
+                lastArtworkBase64 = state.artworkBase64
+            }
+
+            // Heavy lifting in background: decode artwork
+            var decodedArtwork: ByteArray? = null
+            if (artworkChanged) {
                 state.artworkBase64?.let { base64 ->
                     try {
-                        val decodedString = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                        metadata.setArtworkData(decodedString, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                        decodedArtwork = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
                     } catch (e: Exception) {
                         Log.e("MacMediaBridgeService", "Failed to decode artwork", e)
                     }
                 }
+            }
 
-                val builtMetadata = metadata.build()
+            runOnUiThread {
+                // Player access must be on the main thread
+                if (!state.isActive) {
+                    if (dummyPlayer.playbackState != Player.STATE_IDLE) {
+                        dummyPlayer.pause()
+                    }
+                    return@runOnUiThread
+                }
 
-                val mediaItem = MediaItem.Builder()
-                    .setMediaId("mac_media")
-                    .setMediaMetadata(builtMetadata)
-                    .setUri(SILENT_URI)
-                    .setMimeType(MimeTypes.AUDIO_WAV)
-                    .build()
-
-                Log.d("MacMediaBridgeService", "Updating player metadata: ${builtMetadata.title}")
                 val currentItem = dummyPlayer.currentMediaItem
-                if (currentItem?.mediaId != "mac_media") {
-                    dummyPlayer.setMediaItem(mediaItem)
-                    dummyPlayer.prepare()
-                } else if (currentItem.mediaMetadata.title != builtMetadata.title || 
-                    currentItem.mediaMetadata.artist != builtMetadata.artist ||
-                    currentItem.mediaMetadata.artworkData?.size != builtMetadata.artworkData?.size) {
-                    // Replace item to refresh metadata in system UI
-                    dummyPlayer.replaceMediaItem(0, mediaItem)
+                val needsNewItem = currentItem?.mediaId != "mac_media" || titleChanged || artistChanged || albumChanged || artworkChanged
+
+                if (needsNewItem) {
+                    val metadataBuilder = MediaMetadata.Builder()
+                        .setTitle(state.title ?: "Unknown Title")
+                        .setArtist(state.artist ?: "Unknown Artist")
+                        .setAlbumTitle(state.album ?: "Unknown Album")
+                        .setIsPlayable(true)
+                        .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                    
+                    if (artworkChanged) {
+                        metadataBuilder.setArtworkData(decodedArtwork, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                    } else {
+                        // Keep existing artwork data if only text changed
+                        currentItem?.mediaMetadata?.artworkData?.let {
+                            metadataBuilder.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                        }
+                    }
+
+                    val mediaItem = MediaItem.Builder()
+                        .setMediaId("mac_media")
+                        .setMediaMetadata(metadataBuilder.build())
+                        .setUri(SILENT_URI)
+                        .setMimeType(MimeTypes.AUDIO_WAV)
+                        .build()
+
+                    if (currentItem?.mediaId != "mac_media") {
+                        dummyPlayer.setMediaItem(mediaItem)
+                        dummyPlayer.prepare()
+                    } else {
+                        dummyPlayer.replaceMediaItem(0, mediaItem)
+                    }
                 }
 
                 if (state.isPlaying != dummyPlayer.playWhenReady) {
@@ -276,9 +338,6 @@ class MacMediaBridgeService : MediaSessionService() {
                 } else {
                     dummyPlayer.pause()
                 }
-
-                // Force notification update
-                // Media3 handles this when playWhenReady or mediaItem changes
             }
         }
         
@@ -294,7 +353,10 @@ class MacMediaBridgeService : MediaSessionService() {
             putExtra(EXTRA_TITLE, state.title)
             putExtra(EXTRA_ARTIST, state.artist)
             putExtra(EXTRA_ALBUM, state.album)
-            putExtra(EXTRA_ARTWORK, state.artworkBase64)
+            // Only send artwork if it's different from what we last sent
+            if (state.artworkBase64 != null && state.artworkBase64 != lastArtworkBase64) {
+                putExtra(EXTRA_ARTWORK, state.artworkBase64)
+            }
             putExtra(EXTRA_POSITION, state.position)
             putExtra(EXTRA_DURATION, state.duration)
             putExtra(EXTRA_IS_PLAYING, state.isPlaying)

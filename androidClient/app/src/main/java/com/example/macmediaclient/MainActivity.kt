@@ -20,10 +20,16 @@ import android.widget.TextView
 import android.widget.Toast
 import android.content.pm.PackageManager
 import androidx.appcompat.app.AppCompatActivity
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import coil.load
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
+    private val uiScope = CoroutineScope(Dispatchers.Main)
     private lateinit var statusIndicator: ImageView
     private lateinit var statusText: TextView
     private lateinit var artworkImage: ImageView
@@ -69,7 +75,7 @@ class MainActivity : AppCompatActivity() {
             val isPlaying = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_IS_PLAYING, false) ?: false
             val isActive = intent?.getBooleanExtra(MacMediaBridgeService.EXTRA_IS_ACTIVE, false) ?: false
 
-            Log.d("MainActivity", "State: isConnected=$isConnected, isActive=$isActive, title=$title")
+            Log.v("MainActivity", "Broadast Data: isConnected=$isConnected, isActive=$isActive, title=$title, pos=$position, isPlaying=$isPlaying")
             updateUI(isConnected, isActive, title, artist, album, artworkBase64, position, duration, isPlaying)
         }
     }
@@ -245,37 +251,38 @@ class MainActivity : AppCompatActivity() {
 
         setupListeners()
 
-        val receiverFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            RECEIVER_NOT_EXPORTED
-        } else {
-            0
-        }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
             }
         }
-        
+
+        registerReceiver()
+    }
+
+    private fun registerReceiver() {
         registerReceiver(
             stateReceiver,
             IntentFilter(MacMediaBridgeService.ACTION_STATE_UPDATE),
-            receiverFlags
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) RECEIVER_NOT_EXPORTED else 0
         )
     }
 
     private fun setupListeners() {
         playPauseBtn.setOnClickListener {
+            Log.d("MainActivity", "Play/Pause clicked, current isPlaying: ${lastState.isPlaying}")
             val action = if (lastState.isPlaying) "PAUSE" else "PLAY"
-            startService(Intent(this, MacMediaBridgeService::class.java).apply {
+            startForegroundService(Intent(this, MacMediaBridgeService::class.java).apply {
                 this.action = action
             })
         }
         nextBtn.setOnClickListener {
-            startService(Intent(this, MacMediaBridgeService::class.java).apply { action = "NEXT" })
+            Log.d("MainActivity", "Next clicked")
+            startForegroundService(Intent(this, MacMediaBridgeService::class.java).apply { action = "NEXT" })
         }
         prevBtn.setOnClickListener {
-            startService(Intent(this, MacMediaBridgeService::class.java).apply { action = "PREVIOUS" })
+            Log.d("MainActivity", "Prev clicked")
+            startForegroundService(Intent(this, MacMediaBridgeService::class.java).apply { action = "PREVIOUS" })
         }
     }
 
@@ -290,30 +297,21 @@ class MainActivity : AppCompatActivity() {
         duration: Long, 
         isPlaying: Boolean
     ) {
+        // Log basic state for debugging
+        Log.v("MainActivity", "updateUI: active=$isActive, playing=$isPlaying, title=$title")
+
         // Detect if the server is sending seconds or milliseconds
-        // If duration is > 0 and < 10000, it's almost certainly seconds
-        val isSeconds = duration > 0 && duration < 10000
+        val isSeconds = duration in 1..9999
         val posMs = if (isSeconds) position * 1000 else position
         val durMs = if (isSeconds) duration * 1000 else duration
 
         if (isConnected != lastState.isConnected) {
-            Log.d("MainActivity", "Updating connection status: $isConnected")
             statusIndicator.setBackgroundColor(if (isConnected) Color.GREEN else Color.RED)
             statusText.text = if (isConnected) " Connected to Mac" else " Disconnected"
         }
 
-        // Force visibility check on every update if isActive is true
-        if (isActive) {
-            if (mediaControlsLayout.visibility != View.VISIBLE) {
-                Log.d("MainActivity", "Forcing mediaControlsLayout to VISIBLE")
-                mediaControlsLayout.visibility = View.VISIBLE
-            }
-        } else {
-            if (mediaControlsLayout.visibility != View.GONE) {
-                Log.d("MainActivity", "Forcing mediaControlsLayout to GONE")
-                mediaControlsLayout.visibility = View.GONE
-            }
-        }
+        // Force visibility check
+        mediaControlsLayout.visibility = if (isActive) View.VISIBLE else View.GONE
 
         if (isActive) {
             titleText.text = title ?: "No Title"
@@ -321,10 +319,8 @@ class MainActivity : AppCompatActivity() {
             albumText.text = album ?: "Unknown Album"
             playPauseBtn.text = if (isPlaying) "Pause" else "Play"
             
-            // Progress Bar and Timers
             if (durMs > 0) {
                 progressBar.max = durMs.toInt()
-                // Ensure we use the converted posMs for progress and label
                 progressBar.progress = posMs.toInt()
                 elapsedTimeText.text = formatTime(posMs)
                 totalTimeText.text = formatTime(durMs)
@@ -334,23 +330,29 @@ class MainActivity : AppCompatActivity() {
                 totalTimeText.text = "0:00"
             }
 
+            // Only decode and load if it's a NEW artwork string
             if (artworkBase64 != null && artworkBase64 != lastState.artworkBase64) {
-                try {
-                    val decodedString = android.util.Base64.decode(artworkBase64, android.util.Base64.DEFAULT)
-                    artworkImage.load(decodedString) {
-                        crossfade(true)
-                        placeholder(android.R.drawable.ic_menu_report_image)
-                        error(android.R.drawable.ic_menu_report_image)
+                uiScope.launch {
+                    try {
+                        val decodedBytes = withContext(Dispatchers.Default) {
+                            android.util.Base64.decode(artworkBase64, android.util.Base64.DEFAULT)
+                        }
+                        artworkImage.load(decodedBytes) {
+                            crossfade(true)
+                            placeholder(android.R.drawable.ic_menu_report_image)
+                            error(android.R.drawable.ic_menu_report_image)
+                        }
+                    } catch (e: Exception) {
+                        artworkImage.setImageResource(android.R.drawable.ic_menu_report_image)
                     }
-                } catch (e: Exception) {
-                    artworkImage.setImageResource(android.R.drawable.ic_menu_report_image)
                 }
             }
         }
 
         lastState = lastState.copy(
             isConnected = isConnected, isActive = isActive, title = title, artist = artist,
-            album = album, isPlaying = isPlaying, artworkBase64 = artworkBase64,
+            album = album, isPlaying = isPlaying, 
+            artworkBase64 = artworkBase64 ?: lastState.artworkBase64,
             position = position, duration = duration
         )
     }
@@ -364,6 +366,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(stateReceiver)
+        try {
+            unregisterReceiver(stateReceiver)
+        } catch (e: Exception) {
+            // Receiver might not be registered
+        }
     }
 }
